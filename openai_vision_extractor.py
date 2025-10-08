@@ -184,9 +184,64 @@ class OpenAIPropertyExtractor:
             print(f"⚠️  Error in OpenAI comprehensive extraction: {e}")
             return None
     
+    def extract_comprehensive_invoice_data_from_jpeg(self, jpeg_data):
+        """Extract comprehensive invoice data from JPEG using OpenAI Vision"""
+        if not self.enabled:
+            return None
+        
+        try:
+            # Convert JPEG data to PIL Image
+            from PIL import Image
+            import io
+            
+            image = Image.open(io.BytesIO(jpeg_data))
+            
+            # Convert to RGB if needed
+            if image.mode != 'RGB':
+                image = image.convert('RGB')
+            
+            print(f"   🔍 Analyzing JPEG with OpenAI Vision...")
+            invoice_data = self.extract_comprehensive_invoice_data_from_image(image)
+            
+            if invoice_data and len(invoice_data.strip()) > 50:
+                # Check if it contains useful information
+                useful_info = any(keyword in invoice_data for keyword in [
+                    "HOTEL:", "GUEST:", "BILL", "ROOM:", "CHECK-IN", "CHECK-OUT", "AMOUNT:", "GST:"
+                ])
+                
+                if useful_info:
+                    print(f"   ✅ Found comprehensive invoice data from JPEG")
+                    return invoice_data
+                else:
+                    print(f"   ⚠️  Data found but not useful from JPEG")
+                    print(f"   📝 Sample: {invoice_data[:100]}...")
+            else:
+                print(f"   ⚠️  No comprehensive data found from JPEG")
+                if invoice_data:
+                    print(f"   📝 Raw response: {invoice_data[:200]}...")
+            
+            return None
+            
+        except Exception as e:
+            print(f"⚠️  Error in OpenAI JPEG extraction: {e}")
+            return None
+    
     def extract_property_name_from_pdf(self, pdf_data):
         """Extract property name from PDF using OpenAI Vision (legacy method)"""
         comprehensive_data = self.extract_comprehensive_invoice_data_from_pdf(pdf_data)
+        if comprehensive_data and "HOTEL:" in comprehensive_data:
+            # Extract hotel name from the formatted text
+            lines = comprehensive_data.split('\n')
+            for line in lines:
+                if line.startswith('HOTEL:'):
+                    hotel_name = line.replace('HOTEL:', '').strip()
+                    if hotel_name and hotel_name != "Not Found":
+                        return hotel_name
+        return None
+    
+    def extract_property_name_from_jpeg(self, jpeg_data):
+        """Extract property name from JPEG using OpenAI Vision"""
+        comprehensive_data = self.extract_comprehensive_invoice_data_from_jpeg(jpeg_data)
         if comprehensive_data and "HOTEL:" in comprehensive_data:
             # Extract hotel name from the formatted text
             lines = comprehensive_data.split('\n')

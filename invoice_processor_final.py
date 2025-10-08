@@ -115,24 +115,34 @@ def extract_attachment_info(email_message):
                         attachment_texts.append(pdf_text)
                         print(f"   ✅ Extracted {len(pdf_text)} characters from PDF")
                 
+                # Handle JPEG attachments
+                elif content_type in ['image/jpeg', 'image/jpg'] and payload:
+                    print(f"   📷 Processing JPEG: {filename}")
+                    # JPEG files don't have extractable text, but we'll process them with OpenAI Vision
+                    attachment_texts.append("")  # Empty text for JPEG
+                
                 attachments.append(attachment_info)
     
     return attachments if attachments else ['None'], attachment_texts
 
-def extract_vendor_name_improved(subject, from_email, body, pdf_analysis=None, pdf_data=None, openai_extractor=None):
+def extract_vendor_name_improved(subject, from_email, body, pdf_analysis=None, attachment_data=None, openai_extractor=None):
     """Extract vendor name with improved logic"""
-    # First, try to get hotel name from PDF analysis if available
+    # First, try to get hotel name from attachment analysis if available
     hotel_name = None
     if pdf_analysis:
-        for pdf_key, pdf_data in pdf_analysis.items():
-            if pdf_data.get('hotel_name') and pdf_data['hotel_name'] != 'Not Found':
-                hotel_name = pdf_data['hotel_name']
+        for attachment_key, attachment_data in pdf_analysis.items():
+            if attachment_data.get('hotel_name') and attachment_data['hotel_name'] != 'Not Found':
+                hotel_name = attachment_data['hotel_name']
                 break
     
-    # If no hotel name from PDF, try OpenAI Vision
-    if not hotel_name and pdf_data and openai_extractor and openai_extractor.enabled:
+    # If no hotel name from analysis, try OpenAI Vision
+    if not hotel_name and attachment_data and openai_extractor and openai_extractor.enabled:
         try:
-            hotel_name = openai_extractor.extract_property_name_from_pdf(pdf_data)
+            # Try both PDF and JPEG extraction methods
+            hotel_name = openai_extractor.extract_property_name_from_pdf(attachment_data)
+            if not hotel_name or hotel_name == 'Not Found':
+                hotel_name = openai_extractor.extract_property_name_from_jpeg(attachment_data)
+            
             if hotel_name and hotel_name != 'Not Found':
                 print(f"   🤖 OpenAI Vision extracted hotel: {hotel_name}")
         except Exception as e:
@@ -181,28 +191,38 @@ def extract_comprehensive_email_data(email_message, subject, from_email, body, o
     # Extract attachments
     attachments, attachment_texts = extract_attachment_info(email_message)
     
-    # Process PDF attachments with OpenAI Vision
+    # Process PDF and JPEG attachments with OpenAI Vision
     pdf_analysis = {}
     if attachments and attachments != ['None']:
         for i, attachment in enumerate(attachments):
-            if attachment.get('content_type') == 'application/pdf' and attachment.get('payload'):
-                print(f"   🔍 Analyzing PDF {i+1} with OpenAI Vision...")
+            content_type = attachment.get('content_type', '')
+            is_pdf = content_type == 'application/pdf'
+            is_jpeg = content_type in ['image/jpeg', 'image/jpg']
+            
+            if (is_pdf or is_jpeg) and attachment.get('payload'):
+                file_type = "PDF" if is_pdf else "JPEG"
+                print(f"   🔍 Analyzing {file_type} {i+1} with OpenAI Vision...")
                 
-                # Extract text for fallback
-                pdf_text = extract_text_from_pdf(attachment['payload'])
+                # Extract text for fallback (only for PDFs)
+                pdf_text = ""
+                if is_pdf:
+                    pdf_text = extract_text_from_pdf(attachment['payload'])
                 
                 # Try OpenAI Vision first
                 openai_data = None
                 if openai_extractor and openai_extractor.enabled:
                     try:
-                        openai_data = openai_extractor.extract_comprehensive_invoice_data_from_pdf(attachment['payload'])
+                        if is_pdf:
+                            openai_data = openai_extractor.extract_comprehensive_invoice_data_from_pdf(attachment['payload'])
+                        else:  # JPEG
+                            openai_data = openai_extractor.extract_comprehensive_invoice_data_from_jpeg(attachment['payload'])
                         if openai_data:
-                            print(f"   ✅ OpenAI Vision extracted data for PDF {i+1}")
+                            print(f"   ✅ OpenAI Vision extracted data for {file_type} {i+1}")
                     except Exception as e:
-                        print(f"   ⚠️  OpenAI Vision error for PDF {i+1}: {e}")
+                        print(f"   ⚠️  OpenAI Vision error for {file_type} {i+1}: {e}")
                 
-                # Create PDF data structure
-                pdf_data = {
+                # Create attachment data structure
+                attachment_data = {
                     'hotel_name': 'Not Found',
                     'guest_name': 'Not Found',
                     'bill_number': 'Not Found',
@@ -217,68 +237,69 @@ def extract_comprehensive_email_data(email_message, subject, from_email, body, o
                     'hotel_address': 'Not Found',
                     'hotel_phone': 'Not Found',
                     'hotel_email': 'Not Found',
-                    'filename': attachment.get('filename', f'pdf_{i+1}'),
-                    'payload': attachment.get('payload')  # Keep PDF data for upload
+                    'filename': attachment.get('filename', f'{file_type.lower()}_{i+1}'),
+                    'payload': attachment.get('payload'),  # Keep data for upload
+                    'content_type': content_type
                 }
                 
                 # Use OpenAI data if available
                 if openai_data:
-                    pdf_data['openai_extracted_data'] = openai_data
+                    attachment_data['openai_extracted_data'] = openai_data
                     # Parse OpenAI response to extract structured data
                     if 'HOTEL:' in openai_data:
                         hotel_match = re.search(r'HOTEL:\s*([^\n]+)', openai_data)
                         if hotel_match:
-                            pdf_data['hotel_name'] = hotel_match.group(1).strip()
+                            attachment_data['hotel_name'] = hotel_match.group(1).strip()
                     
                     if 'GUEST:' in openai_data:
                         guest_match = re.search(r'GUEST:\s*([^\n]+)', openai_data)
                         if guest_match:
-                            pdf_data['guest_name'] = guest_match.group(1).strip()
+                            attachment_data['guest_name'] = guest_match.group(1).strip()
                     
                     if 'BILL NO:' in openai_data:
                         bill_match = re.search(r'BILL NO:\s*([^\n]+)', openai_data)
                         if bill_match:
-                            pdf_data['bill_number'] = bill_match.group(1).strip()
+                            attachment_data['bill_number'] = bill_match.group(1).strip()
                     
                     if 'AMOUNT:' in openai_data:
                         amount_match = re.search(r'AMOUNT:\s*([^\n]+)', openai_data)
                         if amount_match:
-                            pdf_data['total_amount'] = amount_match.group(1).strip()
+                            attachment_data['total_amount'] = amount_match.group(1).strip()
                     
                     if 'ROOM:' in openai_data:
                         room_match = re.search(r'ROOM:\s*([^\n]+)', openai_data)
                         if room_match:
-                            pdf_data['room_number'] = room_match.group(1).strip()
+                            attachment_data['room_number'] = room_match.group(1).strip()
                     
                     if 'GUESTS:' in openai_data:
                         guests_match = re.search(r'GUESTS:\s*([^\n]+)', openai_data)
                         if guests_match:
-                            pdf_data['number_of_pax'] = guests_match.group(1).strip()
+                            attachment_data['number_of_pax'] = guests_match.group(1).strip()
                     
                     if 'CHECK-IN:' in openai_data:
                         checkin_match = re.search(r'CHECK-IN:\s*([^\n]+)', openai_data)
                         if checkin_match:
-                            pdf_data['arrival_date'] = checkin_match.group(1).strip()
+                            attachment_data['arrival_date'] = checkin_match.group(1).strip()
                     
                     if 'CHECK-OUT:' in openai_data:
                         checkout_match = re.search(r'CHECK-OUT:\s*([^\n]+)', openai_data)
                         if checkout_match:
-                            pdf_data['departure_date'] = checkout_match.group(1).strip()
+                            attachment_data['departure_date'] = checkout_match.group(1).strip()
                     
                     if 'BILL DATE:' in openai_data:
                         billdate_match = re.search(r'BILL DATE:\s*([^\n]+)', openai_data)
                         if billdate_match:
-                            pdf_data['bill_date'] = billdate_match.group(1).strip()
+                            attachment_data['bill_date'] = billdate_match.group(1).strip()
                     
                     if 'GST:' in openai_data:
                         gst_match = re.search(r'GST:\s*([^\n]+)', openai_data)
                         if gst_match:
-                            pdf_data['gst_number'] = gst_match.group(1).strip()
+                            attachment_data['gst_number'] = gst_match.group(1).strip()
                 else:
-                    print(f"   ❌ PDF couldn't be processed")
-                    pdf_data['hotel_name'] = 'PDF couldn\'t be processed'
+                    print(f"   ❌ {file_type} couldn't be processed")
+                    attachment_data['hotel_name'] = f'{file_type} couldn\'t be processed'
                 
-                pdf_analysis[f'pdf_{i+1}'] = pdf_data
+                pdf_analysis[f'{file_type.lower()}_{i+1}'] = attachment_data
     
     # Basic text extraction for email metadata only
     combined_text = body + ' ' + subject
@@ -844,17 +865,18 @@ def process_invoices():
                 comprehensive_data = extract_comprehensive_email_data(email_message, subject, from_email, body, openai_extractor)
                 
                 # Extract vendor name using improved method
-                pdf_data_for_vision = None
+                attachment_data_for_vision = None
                 if comprehensive_data.get('attachments'):
                     for attachment in comprehensive_data['attachments']:
-                        if attachment.get('content_type') == 'application/pdf' and attachment.get('payload'):
-                            pdf_data_for_vision = attachment['payload']
+                        content_type = attachment.get('content_type', '')
+                        if (content_type == 'application/pdf' or content_type in ['image/jpeg', 'image/jpg']) and attachment.get('payload'):
+                            attachment_data_for_vision = attachment['payload']
                             break
                 
                 vendor_name = extract_vendor_name_improved(
                     subject, from_email, body, 
                     comprehensive_data.get('pdf_analysis'), 
-                    pdf_data_for_vision, 
+                    attachment_data_for_vision, 
                     openai_extractor
                 )
                 
