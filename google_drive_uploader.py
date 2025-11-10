@@ -9,7 +9,7 @@ from googleapiclient.http import MediaFileUpload, MediaIoBaseUpload
 from googleapiclient.errors import HttpError
 
 # Google Drive API configuration
-SCOPES = ['https://www.googleapis.com/auth/drive.file']
+SCOPES = ['https://www.googleapis.com/auth/drive.file', 'https://www.googleapis.com/auth/drive']
 CREDENTIALS_FILE = 'client_secret.json'
 TOKEN_FILE = 'token.json'
 
